@@ -46,7 +46,7 @@ Under Armour
 Puma
 Reebok`;
 
-      const response = await querySingleLLM('deepseek-chat', prompt, process.env.VITE_DEEPSEEK_API_KEY);
+      const response = await querySingleLLM('deepseek-chat', prompt);
       
       const competitorNames = response
         .split('\n')

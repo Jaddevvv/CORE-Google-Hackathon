@@ -18,7 +18,7 @@ import {
   getResultsByRunId,
 } from "../utils/db";
 import { runProjectAnalysis } from "../services/analysisService";
-import { getAvailableModels } from "../services/llmService";
+import { getAvailableModels, querySingleLLM } from "../services/llmService";
 
 export default function UserDashboardPage() {
   const navigate = useNavigate();
@@ -66,6 +66,28 @@ export default function UserDashboardPage() {
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [compareRunId, setCompareRunId] = useState(null);
 
+  // AI article engine state
+  const [articleCompanyName, setArticleCompanyName] = useState("");
+  const [articleCompanyUrl, setArticleCompanyUrl] = useState("");
+  const [articleLanguage, setArticleLanguage] = useState("en-US");
+  const [articleCountry, setArticleCountry] = useState("US");
+  const [articleCount, setArticleCount] = useState("8");
+  const [articlePriceUsd, setArticlePriceUsd] = useState("6");
+  const [publishEndpoint, setPublishEndpoint] = useState(
+    import.meta.env.VITE_DEMO_BLOG_UPLOAD_ENDPOINT ||
+      "http://localhost:8787/api/blog/upload"
+  );
+  const [companyContext, setCompanyContext] = useState("");
+  const [trendyKeywords, setTrendyKeywords] = useState([]);
+  const [selectedKeywords, setSelectedKeywords] = useState([]);
+  const [generatedArticles, setGeneratedArticles] = useState([]);
+  const [isLoadingContextKeywords, setIsLoadingContextKeywords] =
+    useState(false);
+  const [isGeneratingArticles, setIsGeneratingArticles] = useState(false);
+  const [isPublishingArticles, setIsPublishingArticles] = useState(false);
+  const [articleEngineError, setArticleEngineError] = useState("");
+  const [articleEngineStatus, setArticleEngineStatus] = useState("");
+
   const brandActivities =
     [
       currentBrand?.sector && `Sector: ${currentBrand.sector}`,
@@ -83,6 +105,12 @@ export default function UserDashboardPage() {
     const models = getAvailableModels();
     setAvailableModels(models);
   }, []);
+
+  useEffect(() => {
+    if (!currentBrand) return;
+    setArticleCompanyName((prev) => prev || currentBrand.name || "");
+    setArticleCompanyUrl((prev) => prev || currentBrand.website || "");
+  }, [currentBrand]);
 
   // Load workspace data
   useEffect(() => {
@@ -388,6 +416,484 @@ ${desiredCount}. [Question]`;
     }
   };
 
+  const handleFetchContextAndKeywords = async () => {
+    if (!articleCompanyName.trim() || !articleCompanyUrl.trim()) {
+      setArticleEngineError("Company name and URL are required.");
+      return;
+    }
+
+    let normalizedUrl = "";
+    try {
+      normalizedUrl = new URL(articleCompanyUrl.trim()).toString();
+    } catch {
+      setArticleEngineError("Company URL must be a valid absolute URL.");
+      return;
+    }
+
+    const contextEndpoint = (
+      import.meta.env.VITE_GET_CONTEXT_ENDPOINT || ""
+    ).trim();
+    const keywordsEndpoint = (
+      import.meta.env.VITE_GET_TRENDY_KEYWORDS_ENDPOINT || ""
+    ).trim();
+    const hasBackendEndpoints = Boolean(contextEndpoint && keywordsEndpoint);
+
+    setIsLoadingContextKeywords(true);
+    setArticleEngineError("");
+    setArticleEngineStatus("");
+
+    try {
+      let resolvedContext = "";
+      const keywordCandidates = [];
+      let sourceLabel = "GPT-4o";
+
+      if (hasBackendEndpoints) {
+        const contextResponse = await fetch(contextEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            companyName: articleCompanyName.trim(),
+            url: normalizedUrl,
+            language: articleLanguage,
+            country: articleCountry,
+          }),
+        });
+
+        if (!contextResponse.ok) {
+          const errorText = await contextResponse.text();
+          throw new Error(
+            `get_context failed (${contextResponse.status}): ${errorText || "No details"}`
+          );
+        }
+
+        const contextData = await contextResponse.json();
+        resolvedContext =
+          typeof contextData === "string"
+            ? contextData
+            : contextData?.context ||
+              contextData?.summary ||
+              contextData?.analysis ||
+              contextData?.result ||
+              "";
+
+        if (!resolvedContext) {
+          throw new Error("get_context returned an empty context.");
+        }
+
+        const keywordsResponse = await fetch(keywordsEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            companyName: articleCompanyName.trim(),
+            url: normalizedUrl,
+            context: resolvedContext,
+            language: articleLanguage,
+            country: articleCountry,
+            rawKeywords: [
+              articleCompanyName.trim(),
+              ...(currentBrand?.sector ? [currentBrand.sector] : []),
+              ...(currentProject?.targetAudience
+                ? [currentProject.targetAudience]
+                : []),
+            ],
+          }),
+        });
+
+        if (!keywordsResponse.ok) {
+          const errorText = await keywordsResponse.text();
+          throw new Error(
+            `get_trendy_keywords failed (${keywordsResponse.status}): ${errorText || "No details"}`
+          );
+        }
+
+        const keywordsData = await keywordsResponse.json();
+
+        if (Array.isArray(keywordsData?.keywords)) {
+          keywordCandidates.push(...keywordsData.keywords);
+        }
+        if (Array.isArray(keywordsData?.trendyKeywords)) {
+          keywordCandidates.push(...keywordsData.trendyKeywords);
+        }
+        if (Array.isArray(keywordsData?.topKeywords)) {
+          keywordCandidates.push(...keywordsData.topKeywords);
+        }
+        if (Array.isArray(keywordsData)) {
+          keywordsData.forEach((entry) => {
+            if (Array.isArray(entry)) {
+              keywordCandidates.push(...entry);
+              return;
+            }
+            if (entry && typeof entry === "object") {
+              Object.values(entry).forEach((value) => {
+                if (Array.isArray(value)) {
+                  keywordCandidates.push(...value);
+                }
+              });
+            }
+          });
+        }
+        if (keywordsData && typeof keywordsData === "object") {
+          Object.values(keywordsData).forEach((value) => {
+            if (Array.isArray(value)) {
+              keywordCandidates.push(...value);
+            }
+          });
+        }
+
+        sourceLabel = "custom backend endpoints";
+      } else {
+        const localResearchModelId = "gpt-4o";
+        const localGptKey = (import.meta.env.VITE_GPT_API_KEY || "").trim();
+        if (!localGptKey) {
+          throw new Error(
+            "Missing VITE_GPT_API_KEY. Add it to your .env to generate context and keywords with GPT-4o."
+          );
+        }
+
+        const contextPrompt = `You are a company research analyst.
+Company: ${articleCompanyName.trim()}
+Website: ${normalizedUrl}
+Language: ${articleLanguage}
+Country: ${articleCountry}
+
+Write a concise business context summary (120-220 words) covering:
+1) sector and positioning
+2) products/services
+3) target audience
+4) key differentiators
+5) likely customer intent keywords.`;
+
+        resolvedContext = (
+          await querySingleLLM(localResearchModelId, contextPrompt, {
+            maxTokens: 900,
+            temperature: 0.5,
+          })
+        ).trim();
+
+        if (!resolvedContext) {
+          throw new Error("Local context generation returned an empty context.");
+        }
+
+        const keywordPrompt = `Based on this company context, generate exactly 20 trendy SEO keyword ideas.
+Company: ${articleCompanyName.trim()}
+Website: ${normalizedUrl}
+Language: ${articleLanguage}
+Country: ${articleCountry}
+
+Context:
+${resolvedContext}
+
+Return ONLY one keyword per line, no numbering, no bullets, no extra text.`;
+
+        const rawKeywordResponse = await querySingleLLM(
+          localResearchModelId,
+          keywordPrompt,
+          { maxTokens: 900, temperature: 0.6 }
+        );
+
+        keywordCandidates.push(
+          ...rawKeywordResponse
+            .split("\n")
+            .map((line) =>
+              line.replace(/^[-*•\d\.\)\s]+/, "").replace(/^"|"$/g, "").trim()
+            )
+            .filter(Boolean)
+        );
+      }
+
+      const dedupedKeywords = [];
+      keywordCandidates.forEach((candidate) => {
+        const keyword = String(candidate || "").trim();
+        if (!keyword) return;
+        if (dedupedKeywords.some((existing) => existing.toLowerCase() === keyword.toLowerCase())) {
+          return;
+        }
+        dedupedKeywords.push(keyword);
+      });
+
+      if (dedupedKeywords.length === 0) {
+        throw new Error(
+          hasBackendEndpoints
+            ? "get_trendy_keywords returned no keywords."
+            : "Local keyword generation returned no keywords."
+        );
+      }
+
+      setCompanyContext(resolvedContext);
+      setTrendyKeywords(dedupedKeywords);
+      setSelectedKeywords(dedupedKeywords.slice(0, Math.min(12, dedupedKeywords.length)));
+      setGeneratedArticles([]);
+      setArticleEngineStatus(
+        `Loaded context and ${dedupedKeywords.length} trendy keywords (${sourceLabel}).`
+      );
+    } catch (error) {
+      setArticleEngineError(error.message || "Failed to load context and keywords.");
+    } finally {
+      setIsLoadingContextKeywords(false);
+    }
+  };
+
+  const handleGenerateArticles = async () => {
+    if (!companyContext.trim()) {
+      setArticleEngineError(
+        "Fetch context and keywords first before generating articles."
+      );
+      return;
+    }
+
+    const requestedCount = Math.max(
+      1,
+      Math.min(50, Number.parseInt(articleCount, 10) || 1)
+    );
+    const keywordsPool =
+      selectedKeywords.length > 0 ? selectedKeywords : trendyKeywords;
+
+    if (keywordsPool.length === 0) {
+      setArticleEngineError("Select at least one keyword before generating.");
+      return;
+    }
+
+    const articleKeywords = Array.from({ length: requestedCount }, (_, index) => {
+      return keywordsPool[index % keywordsPool.length];
+    });
+
+    setIsGeneratingArticles(true);
+    setArticleEngineError("");
+    setArticleEngineStatus("");
+
+    try {
+      const generationEndpoint = import.meta.env.VITE_MASS_ARTICLE_ENDPOINT || "";
+      const localArticleModelId = "gpt-4o";
+      let nextArticles = [];
+      let sourceLabel = "local GPT-4o writer";
+
+      if (generationEndpoint) {
+        const generationResponse = await fetch(generationEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            companyName: articleCompanyName.trim(),
+            companyUrl: articleCompanyUrl.trim(),
+            context: companyContext,
+            keywords: articleKeywords,
+            articleCount: requestedCount,
+            language: articleLanguage,
+            country: articleCountry,
+            pricePerArticleUsd:
+              Math.max(0, Number.parseFloat(articlePriceUsd) || 0),
+          }),
+        });
+
+        if (!generationResponse.ok) {
+          const errorText = await generationResponse.text();
+          throw new Error(
+            `Mass article endpoint failed (${generationResponse.status}): ${errorText || "No details"}`
+          );
+        }
+
+        const generationData = await generationResponse.json();
+        const rawArticles = Array.isArray(generationData?.articles)
+          ? generationData.articles
+          : Array.isArray(generationData?.posts)
+            ? generationData.posts
+            : Array.isArray(generationData?.data)
+              ? generationData.data
+              : [];
+
+        if (rawArticles.length === 0) {
+          throw new Error("Mass article endpoint returned no articles.");
+        }
+
+        nextArticles = rawArticles.slice(0, requestedCount).map((article, idx) => {
+          return {
+            id: `article-${idx + 1}`,
+            title:
+              article?.title ||
+              `How ${articleCompanyName.trim()} wins on ${articleKeywords[idx]}`,
+            keyword: article?.keyword || articleKeywords[idx],
+            content:
+              article?.content || article?.body || article?.text || "",
+          };
+        });
+        sourceLabel = "backend AI endpoint";
+      } else {
+        const LOCAL_GENERATION_MAX = 15;
+        const localGptKey = (import.meta.env.VITE_GPT_API_KEY || "").trim();
+        if (!localGptKey) {
+          throw new Error(
+            "Missing VITE_GPT_API_KEY. Add it to your .env to generate articles with GPT-4o."
+          );
+        }
+
+        if (requestedCount > LOCAL_GENERATION_MAX) {
+          throw new Error(
+            `Local AI generation is limited to ${LOCAL_GENERATION_MAX} articles per run. Lower article count or set VITE_MASS_ARTICLE_ENDPOINT.`
+          );
+        }
+
+        const contextSnippet = companyContext.slice(0, 2200);
+        const nextLocalArticles = [];
+
+        for (let idx = 0; idx < articleKeywords.length; idx += 1) {
+          const keyword = articleKeywords[idx];
+          setArticleEngineStatus(
+            `Generating article ${idx + 1}/${articleKeywords.length} with local GPT-4o writer...`
+          );
+
+          const articlePrompt = `Write a production-quality SEO article for a company blog.
+Company: ${articleCompanyName.trim()}
+Company URL: ${articleCompanyUrl.trim()}
+Language locale: ${articleLanguage}
+Target country: ${articleCountry}
+Primary keyword: ${keyword}
+
+Company context:
+${contextSnippet}
+
+Requirements:
+- 900 to 1300 words.
+- Helpful, specific, and concrete (no placeholders, no generic filler).
+- Include a strong intro, multiple H2/H3 sections, and a conclusion with CTA linking to ${articleCompanyUrl.trim()}.
+- Use the primary keyword naturally in title, intro paragraph, and several section headings.
+- Return semantic HTML in content (h1/h2/h3/p/ul/li/strong/a).
+- Do NOT use markdown.
+
+Return ONLY valid JSON, no code fences:
+{
+  "title": "string",
+  "contentHtml": "string"
+}`;
+
+          const rawArticleResponse = await querySingleLLM(
+            localArticleModelId,
+            articlePrompt,
+            { maxTokens: 2400, temperature: 0.7 }
+          );
+
+          const fallbackTitle = `${articleCompanyName.trim()} guide: ${keyword}`;
+          const fallbackBody = String(rawArticleResponse || "").trim();
+          let parsedArticle = null;
+
+          try {
+            parsedArticle = JSON.parse(fallbackBody);
+          } catch {
+            try {
+              const cleaned = fallbackBody
+                .replace(/^```json\s*/i, "")
+                .replace(/^```\s*/i, "")
+                .replace(/```$/i, "")
+                .trim();
+              parsedArticle = JSON.parse(cleaned);
+            } catch {
+              const jsonStart = fallbackBody.indexOf("{");
+              const jsonEnd = fallbackBody.lastIndexOf("}");
+              if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                try {
+                  parsedArticle = JSON.parse(
+                    fallbackBody.slice(jsonStart, jsonEnd + 1)
+                  );
+                } catch {
+                  parsedArticle = null;
+                }
+              }
+            }
+          }
+
+          const resolvedTitle = String(
+            parsedArticle?.title || fallbackTitle
+          ).trim();
+          const resolvedContent = String(
+            parsedArticle?.contentHtml ||
+              parsedArticle?.content ||
+              parsedArticle?.body ||
+              fallbackBody ||
+              ""
+          ).trim();
+
+          if (!resolvedContent) {
+            throw new Error(`Failed to generate content for keyword "${keyword}".`);
+          }
+
+          nextLocalArticles.push({
+            id: `article-${idx + 1}`,
+            title: resolvedTitle,
+            keyword,
+            content: resolvedContent,
+          });
+        }
+
+        nextArticles = nextLocalArticles;
+      }
+
+      setGeneratedArticles(nextArticles);
+      setArticleEngineStatus(
+        `Generated ${nextArticles.length} articles using ${sourceLabel}.`
+      );
+    } catch (error) {
+      setArticleEngineError(error.message || "Failed to generate articles.");
+    } finally {
+      setIsGeneratingArticles(false);
+    }
+  };
+
+  const handlePublishArticles = async () => {
+    if (!publishEndpoint.trim()) {
+      setArticleEngineError("Provide your backend upload endpoint first.");
+      return;
+    }
+    if (generatedArticles.length === 0) {
+      setArticleEngineError("Generate at least one article before publishing.");
+      return;
+    }
+
+    setIsPublishingArticles(true);
+    setArticleEngineError("");
+    setArticleEngineStatus("");
+
+    try {
+      const response = await fetch(publishEndpoint.trim(), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyName: articleCompanyName.trim(),
+          companyUrl: articleCompanyUrl.trim(),
+          context: companyContext,
+          language: articleLanguage,
+          country: articleCountry,
+          articlePriceUsd: Math.max(0, Number.parseFloat(articlePriceUsd) || 0),
+          totalArticles: generatedArticles.length,
+          totalPriceUsd:
+            generatedArticles.length *
+            Math.max(0, Number.parseFloat(articlePriceUsd) || 0),
+          articles: generatedArticles,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+          `Upload endpoint failed (${response.status}): ${errorText || "No details"}`
+        );
+      }
+
+      setArticleEngineStatus(
+        `Published ${generatedArticles.length} articles to ${publishEndpoint.trim()}.`
+      );
+    } catch (error) {
+      setArticleEngineError(error.message || "Failed to publish articles.");
+    } finally {
+      setIsPublishingArticles(false);
+    }
+  };
+
+  const handleKeywordToggle = (keyword) => {
+    setSelectedKeywords((prev) =>
+      prev.includes(keyword)
+        ? prev.filter((item) => item !== keyword)
+        : [...prev, keyword]
+    );
+  };
+
   if (needsOnboarding) {
     return null; // Will redirect to onboarding
   }
@@ -405,6 +911,20 @@ ${desiredCount}. [Question]`;
   }
 
   const hasResults = results.length > 0;
+  const normalizedArticleCount = Math.max(
+    1,
+    Math.min(50, Number.parseInt(articleCount, 10) || 1)
+  );
+  const normalizedArticlePrice = Math.max(
+    0,
+    Number.parseFloat(articlePriceUsd) || 0
+  );
+  const estimatedDraftCost = (
+    normalizedArticleCount * normalizedArticlePrice
+  ).toFixed(2);
+  const estimatedGeneratedCost = (
+    generatedArticles.length * normalizedArticlePrice
+  ).toFixed(2);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -496,6 +1016,295 @@ ${desiredCount}. [Question]`;
               </div>
             )}
           </div>
+        </div>
+
+        {/* AI Article Engine */}
+        <div className="mb-8 bg-white rounded-2xl border border-gray-200 p-6">
+          <div className="flex flex-col gap-2 mb-6 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">
+                AI Article Engine
+              </h2>
+              <p className="text-sm text-gray-600">
+                Enter company data, fetch `get_context` + `get_trendy_keywords`,
+                generate bulk articles, then push to your blog endpoint.
+              </p>
+            </div>
+            <div className="rounded-xl bg-purple-50 border border-purple-200 px-4 py-2 text-sm">
+              <p className="font-semibold text-purple-700">
+                Estimated batch cost: ${estimatedDraftCost}
+              </p>
+              <p className="text-xs text-purple-600">
+                {normalizedArticleCount} article
+                {normalizedArticleCount !== 1 ? "s" : ""} x $
+                {normalizedArticlePrice.toFixed(2)}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Company name
+              </label>
+              <input
+                type="text"
+                value={articleCompanyName}
+                onChange={(e) => setArticleCompanyName(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                placeholder="Acme Inc."
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Company URL
+              </label>
+              <input
+                type="url"
+                value={articleCompanyUrl}
+                onChange={(e) => setArticleCompanyUrl(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                placeholder="https://www.company.com"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Language
+              </label>
+              <input
+                type="text"
+                value={articleLanguage}
+                onChange={(e) => setArticleLanguage(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                placeholder="en-US"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Country
+              </label>
+              <input
+                type="text"
+                value={articleCountry}
+                onChange={(e) => setArticleCountry(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                placeholder="US"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 mb-5">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Articles to generate
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="50"
+                value={articleCount}
+                onChange={(e) => setArticleCount(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Price per article (USD)
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={articlePriceUsd}
+                onChange={(e) => setArticlePriceUsd(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Blog upload endpoint
+              </label>
+              <input
+                type="url"
+                value={publishEndpoint}
+                onChange={(e) => setPublishEndpoint(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                placeholder="https://your-backend.com/api/blog/upload"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-3 mb-4">
+            <button
+              onClick={handleFetchContextAndKeywords}
+              disabled={isLoadingContextKeywords}
+              className="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition"
+            >
+              {isLoadingContextKeywords
+                ? "Loading context..."
+                : "1) Fetch Context + Trendy Keywords"}
+            </button>
+            <button
+              onClick={handleGenerateArticles}
+              disabled={isGeneratingArticles || !companyContext || trendyKeywords.length === 0}
+              className="px-4 py-2 rounded-lg border border-purple-600 text-purple-700 text-sm font-semibold hover:bg-purple-50 disabled:border-gray-300 disabled:text-gray-400 disabled:cursor-not-allowed transition"
+            >
+              {isGeneratingArticles ? "Generating..." : "2) Generate Articles"}
+            </button>
+            <button
+              onClick={handlePublishArticles}
+              disabled={isPublishingArticles || generatedArticles.length === 0}
+              className="px-4 py-2 rounded-lg bg-gray-900 text-white text-sm font-semibold hover:bg-black disabled:bg-gray-400 disabled:cursor-not-allowed transition"
+            >
+              {isPublishingArticles ? "Publishing..." : "3) Publish to Endpoint"}
+            </button>
+          </div>
+
+          {articleEngineError && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {articleEngineError}
+            </div>
+          )}
+          {articleEngineStatus && (
+            <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+              {articleEngineStatus}
+            </div>
+          )}
+
+          {companyContext && (
+            <div className="mb-5">
+              <label className="block text-xs font-semibold text-gray-600 mb-1">
+                Company context
+              </label>
+              <textarea
+                value={companyContext}
+                onChange={(e) => setCompanyContext(e.target.value)}
+                rows={6}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+              />
+            </div>
+          )}
+
+          {trendyKeywords.length > 0 && (
+            <div className="mb-5">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <p className="text-sm font-semibold text-gray-900">
+                  Trendy keywords ({selectedKeywords.length} selected)
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setSelectedKeywords(trendyKeywords)}
+                    className="text-xs text-purple-600 hover:text-purple-700 font-medium"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    onClick={() => setSelectedKeywords([])}
+                    className="text-xs text-gray-500 hover:text-gray-700 font-medium"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {trendyKeywords.map((keyword) => {
+                  const selected = selectedKeywords.includes(keyword);
+                  return (
+                    <button
+                      key={keyword}
+                      onClick={() => handleKeywordToggle(keyword)}
+                      className={`px-3 py-1 rounded-full border text-xs font-semibold transition ${
+                        selected
+                          ? "border-purple-500 bg-purple-100 text-purple-700"
+                          : "border-gray-300 bg-white text-gray-700 hover:border-gray-400"
+                      }`}
+                    >
+                      {keyword}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {generatedArticles.length > 0 && (
+            <div className="border-t border-gray-200 pt-5">
+              <div className="flex flex-col gap-1 mb-4 md:flex-row md:items-center md:justify-between">
+                <h3 className="text-base font-semibold text-gray-900">
+                  Generated articles ({generatedArticles.length})
+                </h3>
+                <p className="text-sm text-gray-600">
+                  Batch price at current rate: ${estimatedGeneratedCost}
+                </p>
+              </div>
+              <div className="space-y-4">
+                {generatedArticles.map((article) => (
+                  <div
+                    key={article.id}
+                    className="rounded-xl border border-gray-200 bg-gray-50 p-4"
+                  >
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">
+                          Title
+                        </label>
+                        <input
+                          type="text"
+                          value={article.title}
+                          onChange={(e) =>
+                            setGeneratedArticles((prev) =>
+                              prev.map((item) =>
+                                item.id === article.id
+                                  ? { ...item, title: e.target.value }
+                                  : item
+                              )
+                            )
+                          }
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1">
+                          Keyword
+                        </label>
+                        <input
+                          type="text"
+                          value={article.keyword}
+                          onChange={(e) =>
+                            setGeneratedArticles((prev) =>
+                              prev.map((item) =>
+                                item.id === article.id
+                                  ? { ...item, keyword: e.target.value }
+                                  : item
+                              )
+                            )
+                          }
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                        />
+                      </div>
+                    </div>
+                    <label className="block text-xs font-semibold text-gray-600 mb-1">
+                      Content
+                    </label>
+                    <textarea
+                      value={article.content}
+                      onChange={(e) =>
+                        setGeneratedArticles((prev) =>
+                          prev.map((item) =>
+                            item.id === article.id
+                              ? { ...item, content: e.target.value }
+                              : item
+                          )
+                        )
+                      }
+                      rows={10}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm leading-relaxed focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Model Selection Panel */}

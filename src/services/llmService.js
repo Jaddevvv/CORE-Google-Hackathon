@@ -26,15 +26,15 @@ const LLM_CONFIGS = {
     name: "GPT-4o Mini",
     endpoint: "https://api.openai.com/v1/chat/completions",
     model: "gpt-4o-mini",
-    apiKey: import.meta.env.VITE_GPT4O_MINI_API_KEY,
+    apiKey: import.meta.env.VITE_GPT_API_KEY,
     available: true,
     logo: "/img/openai.png",
   },
-  "gemini-3-flash-preview": {
-    name: "Gemini 3 Flash Preview",
+  "gemini-2.5-flash-lite": {
+    name: "gemini-2.5-flash-lite",
     endpoint:
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent",
-    model: "gemini-3-flash-preview",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent",
+    model: "gemini-2.5-flash-lite",
     apiKey: import.meta.env.VITE_GEMINI_FLASH_LITE_API_KEY,
     available: true,
     logo: "/img/gemini.png",
@@ -44,7 +44,7 @@ const LLM_CONFIGS = {
     name: "GPT-4o",
     endpoint: "https://api.openai.com/v1/chat/completions",
     model: "gpt-4o",
-    apiKey: import.meta.env.VITE_GPT4O_API_KEY,
+    apiKey: import.meta.env.VITE_GPT_API_KEY,
     available: false,
     logo: "/img/openai.png",
   },
@@ -79,8 +79,12 @@ const LLM_CONFIGS = {
 /**
  * Query a single LLM with a question
  */
-export async function querySingleLLM(modelId, question) {
+export async function querySingleLLM(modelId, question, options = {}) {
   const config = LLM_CONFIGS[modelId];
+  const temperature =
+    typeof options?.temperature === "number" ? options.temperature : 0.7;
+  const maxTokens =
+    typeof options?.maxTokens === "number" ? options.maxTokens : 500;
 
   if (!config) {
     throw new Error(`Unknown model: ${modelId}`);
@@ -104,8 +108,8 @@ export async function querySingleLLM(modelId, question) {
           },
         ],
         generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 500,
+          temperature,
+          maxOutputTokens: maxTokens,
         },
       }),
     });
@@ -133,8 +137,8 @@ export async function querySingleLLM(modelId, question) {
           content: question,
         },
       ],
-      temperature: 0.7,
-      max_tokens: 500,
+      temperature,
+      max_tokens: maxTokens,
     }),
   });
 

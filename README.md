@@ -1,5 +1,42 @@
 # CORE - Brand Mention Tracking Platform
 
+## Quick Start (Run Everything)
+
+1. Install dependencies at project root:
+
+```bash
+npm install
+```
+
+2. Create your env file:
+
+```bash
+cp .env.example .env
+```
+
+3. Start CORE app in terminal 1:
+
+```bash
+npm run dev
+```
+
+4. Start demo blog SaaS in terminal 2:
+
+```bash
+npm run demo:blog
+```
+
+5. Open these URLs:
+- CORE app: `http://localhost:5173`
+- Demo blog SaaS: `http://localhost:8787`
+- Live blog page: `http://localhost:8787/blog`
+
+6. Test end-to-end article publishing:
+- In CORE dashboard, go to **AI Article Engine**
+- Keep upload endpoint as `http://localhost:8787/api/blog/upload`
+- Generate articles and click **Publish to Endpoint**
+- Refresh `http://localhost:8787/blog` to see uploaded posts
+
 ## What is CORE?
 
 CORE is a platform that helps businesses understand how their brand is mentioned across multiple AI language models (LLMs) like ChatGPT, Gemini, Claude, and others. Think of it as a radar system that scans what these AI assistants say about your brand when people ask questions online.

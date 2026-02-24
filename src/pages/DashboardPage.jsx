@@ -45,6 +45,17 @@ const dashboardModules = [
       'One-click download and sharing capabilities',
     ],
   },
+  {
+    name: 'AI Articles',
+    title: 'Generate and Publish SEO Articles',
+    description: 'Fetch company context, pull trendy keywords, and mass produce blog-ready AI articles priced per post.',
+    image: '/img/Dash_Reports.jpg',
+    features: [
+      'Context + keyword discovery with dedicated endpoints',
+      'Bulk article generation and editable drafts',
+      'Direct upload to your backend blog publishing endpoint',
+    ],
+  },
 ];
 
 const stats = [
@@ -60,8 +71,8 @@ const stats = [
   },
   { 
     label: 'Export Ready', 
-    value: 'Branded PDF Reports',
-    sublabel: 'Executive summaries'
+    value: 'Reports + Article Publishing',
+    sublabel: 'Executive docs and blog deployment'
   },
 ];
 

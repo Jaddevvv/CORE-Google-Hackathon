@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PulseStack Blog</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="blog-header">
+        <div>
+          <p class="badge">Live Blog</p>
+          <h1>PulseStack Articles</h1>
+          <p id="status">Loading articles...</p>
+        </div>
+        <div class="actions">
+          <a href="/">Back</a>
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+      </header>
+      <section id="articles" class="article-grid"></section>
+    </main>
+
+    <script>
+      const statusEl = document.getElementById("status");
+      const articlesEl = document.getElementById("articles");
+      const refreshBtn = document.getElementById("refresh");
+
+      function escapeHtml(input) {
+        return String(input)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function sanitizeHtml(input) {
+        return String(input)
+          .replace(/<\s*(script|style|iframe|object|embed|link|meta)[^>]*>[\s\S]*?<\s*\/\s*\1>/gi, "")
+          .replace(/<\s*(script|style|iframe|object|embed|link|meta)[^>]*\/?\s*>/gi, "")
+          .replace(/\son\w+\s*=\s*(['"]).*?\1/gi, "")
+          .replace(/\son\w+\s*=\s*[^\s>]+/gi, "")
+          .replace(/\sstyle\s*=\s*(['"]).*?\1/gi, "")
+          .replace(/javascript:/gi, "");
+      }
+
+      function formatInline(text) {
+        return text
+          .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
+          .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+          .replace(/`([^`]+)`/g, "<code>$1</code>");
+      }
+
+      function renderMarkdown(markdown) {
+        const lines = escapeHtml(markdown).replaceAll("\r\n", "\n").split("\n");
+        const html = [];
+        let inUnorderedList = false;
+        let inOrderedList = false;
+
+        const closeLists = () => {
+          if (inUnorderedList) {
+            html.push("</ul>");
+            inUnorderedList = false;
+          }
+          if (inOrderedList) {
+            html.push("</ol>");
+            inOrderedList = false;
+          }
+        };
+
+        lines.forEach((rawLine) => {
+          const line = rawLine.trim();
+          if (!line) {
+            closeLists();
+            return;
+          }
+
+          if (line.startsWith("### ")) {
+            closeLists();
+            html.push(`<h3>${formatInline(line.slice(4).trim())}</h3>`);
+            return;
+          }
+          if (line.startsWith("## ")) {
+            closeLists();
+            html.push(`<h2>${formatInline(line.slice(3).trim())}</h2>`);
+            return;
+          }
+          if (line.startsWith("# ")) {
+            closeLists();
+            html.push(`<h1>${formatInline(line.slice(2).trim())}</h1>`);
+            return;
+          }
+
+          const unorderedMatch = line.match(/^[-*]\s+(.+)$/);
+          if (unorderedMatch) {
+            if (!inUnorderedList) {
+              closeLists();
+              html.push("<ul>");
+              inUnorderedList = true;
+            }
+            html.push(`<li>${formatInline(unorderedMatch[1])}</li>`);
+            return;
+          }
+
+          const orderedMatch = line.match(/^\d+\.\s+(.+)$/);
+          if (orderedMatch) {
+            if (!inOrderedList) {
+              closeLists();
+              html.push("<ol>");
+              inOrderedList = true;
+            }
+            html.push(`<li>${formatInline(orderedMatch[1])}</li>`);
+            return;
+          }
+
+          closeLists();
+          html.push(`<p>${formatInline(line)}</p>`);
+        });
+
+        closeLists();
+        return html.join("");
+      }
+
+      function formatContent(content) {
+        const value = String(content || "").trim();
+        if (!value) return "";
+
+        const looksLikeHtml = /<\/?[a-z][\s\S]*>/i.test(value);
+        if (looksLikeHtml) {
+          return sanitizeHtml(value);
+        }
+
+        return renderMarkdown(value);
+      }
+
+      async function loadArticles() {
+        statusEl.textContent = "Loading articles...";
+        try {
+          const response = await fetch("/api/blog/articles", { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error("Failed to load articles.");
+          }
+
+          const data = await response.json();
+          const articles = Array.isArray(data.articles) ? data.articles : [];
+
+          if (articles.length === 0) {
+            statusEl.textContent =
+              "No articles yet. Upload from CORE dashboard and refresh.";
+            articlesEl.innerHTML = "";
+            return;
+          }
+
+          statusEl.textContent = `${articles.length} article${
+            articles.length === 1 ? "" : "s"
+          } published`;
+
+          articlesEl.innerHTML = articles
+            .map((article) => {
+              const createdAt = new Date(article.createdAt).toLocaleString();
+              const keyword = article.keyword
+                ? `<span class="tag">${escapeHtml(article.keyword)}</span>`
+                : "";
+              const source = article.companyUrl
+                ? `<a href="${escapeHtml(article.companyUrl)}" target="_blank" rel="noreferrer">${escapeHtml(article.companyName || "Company")}</a>`
+                : escapeHtml(article.companyName || "Company");
+
+              return `
+                <article class="card">
+                  <div class="card-head">
+                    <h2>${escapeHtml(article.title)}</h2>
+                    ${keyword}
+                  </div>
+                  <p class="meta">From ${source}</p>
+                  <p class="meta">${createdAt}</p>
+                  <div class="content">${formatContent(article.content)}</div>
+                </article>
+              `;
+            })
+            .join("");
+        } catch (error) {
+          statusEl.textContent = error.message;
+        }
+      }
+
+      refreshBtn.addEventListener("click", loadArticles);
+      loadArticles();
+      setInterval(loadArticles, 5000);
+    </script>
+  </body>
+</html>
