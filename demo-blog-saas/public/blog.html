@@ -3,29 +3,92 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PulseStack Blog</title>
+    <title>PulseStack Articles</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
-      <header class="blog-header">
+      <header class="blog-header reveal no-lift">
         <div>
           <p class="badge">Live Blog</p>
           <h1>PulseStack Articles</h1>
           <p id="status">Loading articles...</p>
         </div>
         <div class="actions">
-          <a href="/">Back</a>
+          <a href="/">SaaS Home</a>
+          <a href="/blog">All Articles</a>
           <button id="refresh" type="button">Refresh</button>
         </div>
       </header>
-      <section id="articles" class="article-grid"></section>
+
+      <section id="listView" class="view-block">
+        <div class="section-head reveal">
+          <h2>Latest Posts</h2>
+          <p>Tap any post to open the full article page.</p>
+        </div>
+        <section id="articles" class="article-grid"></section>
+      </section>
+
+      <section id="detailView" class="view-block hidden">
+        <a href="/blog" class="back-link reveal">← Back to all posts</a>
+
+        <article class="article-shell reveal">
+          <h2 id="detailTitle" class="article-title"></h2>
+          <p id="detailMeta" class="article-meta"></p>
+          <div id="detailContent" class="content article-content"></div>
+          <p id="detailSeoKeyword" class="seo-keyword hidden"></p>
+        </article>
+
+        <section id="relatedSection" class="related-section hidden">
+          <div class="section-head reveal">
+            <h2>More Articles</h2>
+            <p>Continue reading from the latest published posts.</p>
+          </div>
+          <section id="relatedArticles" class="article-grid"></section>
+        </section>
+      </section>
     </main>
 
     <script>
       const statusEl = document.getElementById("status");
       const articlesEl = document.getElementById("articles");
+      const listViewEl = document.getElementById("listView");
+      const detailViewEl = document.getElementById("detailView");
+      const detailTitleEl = document.getElementById("detailTitle");
+      const detailMetaEl = document.getElementById("detailMeta");
+      const detailSeoKeywordEl = document.getElementById("detailSeoKeyword");
+      const detailContentEl = document.getElementById("detailContent");
       const refreshBtn = document.getElementById("refresh");
+      const relatedSectionEl = document.getElementById("relatedSection");
+      const relatedArticlesEl = document.getElementById("relatedArticles");
+
+      function getCurrentSlug() {
+        const cleanPath = window.location.pathname.replace(/\/+$/, "");
+        const segments = cleanPath.split("/").filter(Boolean);
+        if (segments.length < 2 || segments[0] !== "blog") {
+          return "";
+        }
+        return decodeURIComponent(segments.slice(1).join("/"));
+      }
+
+      function slugify(input) {
+        const base = String(input || "")
+          .toLowerCase()
+          .normalize("NFKD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+          .slice(0, 80);
+        return base || "article";
+      }
+
+      function resolveArticleSlug(article, index = 0) {
+        const slug = String(article?.slug || "").trim();
+        if (slug) return slug;
+        const titleSlug = slugify(article?.title || "");
+        if (titleSlug && titleSlug !== "article") return titleSlug;
+        return `article-${index + 1}`;
+      }
 
       function escapeHtml(input) {
         return String(input)
@@ -135,59 +198,210 @@
         return renderMarkdown(value);
       }
 
-      async function loadArticles() {
+      function toPlainText(content) {
+        return String(content || "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1")
+          .replace(/^[#>*\-\d\.\s]+/gm, "")
+          .replace(/`([^`]+)`/g, "$1")
+          .replace(/\*\*([^*]+)\*\*/g, "$1")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      function getExcerpt(content, maxLength = 190) {
+        const text = toPlainText(content);
+        if (text.length <= maxLength) return text;
+        return `${text.slice(0, maxLength).trimEnd()}...`;
+      }
+
+      function formatDate(dateInput) {
+        const date = new Date(dateInput);
+        if (Number.isNaN(date.getTime())) return "Recently";
+        return date.toLocaleString();
+      }
+
+      function createArticleCard(article, index, compact = false) {
+        const delay = Math.min(index, 10) * 70;
+        const articleSlug = resolveArticleSlug(article, index);
+
+        return `
+          <article class="story-card reveal" style="--delay:${delay}ms;">
+            <a href="/blog/${encodeURIComponent(articleSlug)}" class="story-link">
+              <div class="story-head">
+                <p class="meta">${formatDate(article.createdAt)}</p>
+              </div>
+              <h3 class="story-title">${escapeHtml(article.title)}</h3>
+              <p class="story-excerpt">${escapeHtml(getExcerpt(article.content, compact ? 130 : 190))}</p>
+              <div class="story-foot">
+                <span class="read-more">Read article →</span>
+              </div>
+            </a>
+          </article>
+        `;
+      }
+
+      function activateRevealAnimation() {
+        const revealElements = Array.from(document.querySelectorAll(".reveal"));
+        revealElements.forEach((element) => element.classList.remove("is-visible"));
+
+        if (!("IntersectionObserver" in window)) {
+          revealElements.forEach((element) => element.classList.add("is-visible"));
+          return;
+        }
+
+        const observer = new IntersectionObserver(
+          (entries) => {
+            entries.forEach((entry) => {
+              if (entry.isIntersecting) {
+                entry.target.classList.add("is-visible");
+                observer.unobserve(entry.target);
+              }
+            });
+          },
+          { threshold: 0.12 }
+        );
+
+        revealElements.forEach((element) => observer.observe(element));
+      }
+
+      function renderListView(articles) {
+        detailViewEl.classList.add("hidden");
+        listViewEl.classList.remove("hidden");
+
+        if (articles.length === 0) {
+          statusEl.textContent = "No articles for now.";
+          articlesEl.innerHTML = `
+            <article class="empty-state reveal is-visible">
+              <p class="badge">Empty Blog</p>
+              <h3>No article for now</h3>
+              <p>
+                Publish articles from the CORE dashboard and they will appear
+                here automatically.
+              </p>
+              <div class="actions">
+                <a href="/">Go to SaaS Home</a>
+              </div>
+            </article>
+          `;
+          return;
+        }
+
+        statusEl.textContent = `${articles.length} article${articles.length === 1 ? "" : "s"} published`;
+        document.title = "PulseStack Articles";
+
+        articlesEl.innerHTML = articles
+          .map((article, index) => createArticleCard(article, index))
+          .join("");
+
+        activateRevealAnimation();
+      }
+
+      function renderNotFoundView(articles, missingSlug) {
+        listViewEl.classList.add("hidden");
+        detailViewEl.classList.remove("hidden");
+
+        detailSeoKeywordEl.classList.add("hidden");
+        detailSeoKeywordEl.textContent = "";
+        detailTitleEl.textContent = "Article not found";
+        detailMetaEl.textContent = `No post matched slug \"${missingSlug}\".`;
+        detailContentEl.innerHTML =
+          "<p>The article URL is invalid or the post was removed. Go back to all articles and choose another post.</p>";
+
+        if (articles.length > 0) {
+          relatedSectionEl.classList.remove("hidden");
+          relatedArticlesEl.innerHTML = articles
+            .slice(0, 3)
+            .map((article, index) => createArticleCard(article, index, true))
+            .join("");
+        } else {
+          relatedSectionEl.classList.add("hidden");
+          relatedArticlesEl.innerHTML = "";
+        }
+
+        document.title = "Article not found | PulseStack";
+        activateRevealAnimation();
+      }
+
+      function renderArticleView(article, articles) {
+        listViewEl.classList.add("hidden");
+        detailViewEl.classList.remove("hidden");
+        const currentArticleSlug = resolveArticleSlug(article);
+
+        detailTitleEl.textContent = article.title;
+        const sourceName = String(article.companyName || "").trim();
+        detailMetaEl.textContent = sourceName
+          ? `${formatDate(article.createdAt)} · ${sourceName}`
+          : formatDate(article.createdAt);
+        detailContentEl.innerHTML = formatContent(article.content);
+
+        if (article.keyword) {
+          detailSeoKeywordEl.classList.remove("hidden");
+          detailSeoKeywordEl.textContent = `SEO keyword: ${article.keyword}`;
+        } else {
+          detailSeoKeywordEl.classList.add("hidden");
+          detailSeoKeywordEl.textContent = "";
+        }
+
+        const related = articles
+          .filter((entry, index) => resolveArticleSlug(entry, index) !== currentArticleSlug)
+          .slice(0, 3);
+        if (related.length > 0) {
+          relatedSectionEl.classList.remove("hidden");
+          relatedArticlesEl.innerHTML = related
+            .map((entry, index) => createArticleCard(entry, index, true))
+            .join("");
+        } else {
+          relatedSectionEl.classList.add("hidden");
+          relatedArticlesEl.innerHTML = "";
+        }
+
+        statusEl.textContent = `Reading: ${article.title}`;
+        document.title = `${article.title} | PulseStack`;
+        activateRevealAnimation();
+      }
+
+      async function fetchArticles() {
+        const response = await fetch("/api/blog/articles", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("Failed to load articles.");
+        }
+        const data = await response.json();
+        return Array.isArray(data.articles) ? data.articles : [];
+      }
+
+      async function loadPage() {
         statusEl.textContent = "Loading articles...";
         try {
-          const response = await fetch("/api/blog/articles", { cache: "no-store" });
-          if (!response.ok) {
-            throw new Error("Failed to load articles.");
-          }
+          const articles = await fetchArticles();
+          const currentSlug = getCurrentSlug();
 
-          const data = await response.json();
-          const articles = Array.isArray(data.articles) ? data.articles : [];
-
-          if (articles.length === 0) {
-            statusEl.textContent =
-              "No articles yet. Upload from CORE dashboard and refresh.";
-            articlesEl.innerHTML = "";
+          if (!currentSlug) {
+            renderListView(articles);
             return;
           }
 
-          statusEl.textContent = `${articles.length} article${
-            articles.length === 1 ? "" : "s"
-          } published`;
+          const currentArticle = articles.find((article, index) => {
+            return resolveArticleSlug(article, index) === currentSlug;
+          });
+          if (!currentArticle) {
+            renderNotFoundView(articles, currentSlug);
+            return;
+          }
 
-          articlesEl.innerHTML = articles
-            .map((article) => {
-              const createdAt = new Date(article.createdAt).toLocaleString();
-              const keyword = article.keyword
-                ? `<span class="tag">${escapeHtml(article.keyword)}</span>`
-                : "";
-              const source = article.companyUrl
-                ? `<a href="${escapeHtml(article.companyUrl)}" target="_blank" rel="noreferrer">${escapeHtml(article.companyName || "Company")}</a>`
-                : escapeHtml(article.companyName || "Company");
-
-              return `
-                <article class="card">
-                  <div class="card-head">
-                    <h2>${escapeHtml(article.title)}</h2>
-                    ${keyword}
-                  </div>
-                  <p class="meta">From ${source}</p>
-                  <p class="meta">${createdAt}</p>
-                  <div class="content">${formatContent(article.content)}</div>
-                </article>
-              `;
-            })
-            .join("");
+          renderArticleView(currentArticle, articles);
         } catch (error) {
-          statusEl.textContent = error.message;
+          statusEl.textContent = error.message || "Failed to load blog content.";
         }
       }
 
-      refreshBtn.addEventListener("click", loadArticles);
-      loadArticles();
-      setInterval(loadArticles, 5000);
+      refreshBtn.addEventListener("click", loadPage);
+      loadPage();
+      setInterval(() => {
+        if (!getCurrentSlug()) {
+          loadPage();
+        }
+      }, 15000);
     </script>
   </body>
 </html>

@@ -36,6 +36,7 @@ npm run demo:blog
 - Keep upload endpoint as `http://localhost:8787/api/blog/upload`
 - Generate articles and click **Publish to Endpoint**
 - Refresh `http://localhost:8787/blog` to see uploaded posts
+- DELETE ARTICLES : curl -X DELETE http://localhost:8787/api/blog/articles
 
 ## What is CORE?
 

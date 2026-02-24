@@ -22,7 +22,11 @@ function readArticles() {
   try {
     const raw = fs.readFileSync(DATA_FILE, "utf8");
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    const normalized = normalizeStoredArticles(Array.isArray(parsed) ? parsed : []);
+    if (JSON.stringify(normalized) !== JSON.stringify(parsed)) {
+      writeArticles(normalized);
+    }
+    return normalized;
   } catch (error) {
     return [];
   }
@@ -37,7 +41,7 @@ function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Cache-Control": "no-store",
   });
@@ -59,7 +63,69 @@ function sendFile(res, filePath, contentType) {
   });
 }
 
-function normalizeArticlePayload(payload) {
+function slugify(value) {
+  const base = String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80);
+  return base || "article";
+}
+
+function makeUniqueSlug(baseSlug, usedSlugs) {
+  let candidate = baseSlug || "article";
+  let suffix = 2;
+  while (usedSlugs.has(candidate)) {
+    candidate = `${baseSlug}-${suffix}`;
+    suffix += 1;
+  }
+  usedSlugs.add(candidate);
+  return candidate;
+}
+
+function normalizeStoredArticles(articles) {
+  const usedSlugs = new Set();
+
+  return articles
+    .filter((article) => article && typeof article === "object")
+    .map((article, index) => {
+      const title = String(article.title || "").trim();
+      const content = String(
+        article.content || article.body || article.text || ""
+      ).trim();
+      if (!title || !content) {
+        return null;
+      }
+
+      const createdAt = new Date(article.createdAt);
+      const safeCreatedAt = Number.isNaN(createdAt.getTime())
+        ? new Date().toISOString()
+        : createdAt.toISOString();
+
+      const id = String(article.id || `blog-existing-${index + 1}`).trim();
+      const companyName = String(article.companyName || "Unknown Company").trim();
+      const companyUrl = String(article.companyUrl || "").trim();
+      const keyword = String(article.keyword || "").trim();
+      const slugSeed = String(article.slug || title).trim();
+      const slug = makeUniqueSlug(slugify(slugSeed), usedSlugs);
+
+      return {
+        id: id || `blog-existing-${index + 1}`,
+        title,
+        slug,
+        keyword,
+        content,
+        companyName: companyName || "Unknown Company",
+        companyUrl,
+        createdAt: safeCreatedAt,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeArticlePayload(payload, existingArticles = []) {
   if (!payload || typeof payload !== "object") return [];
 
   const possibleArrays = [
@@ -72,9 +138,15 @@ function normalizeArticlePayload(payload) {
   const source = possibleArrays.find((entry) => Array.isArray(entry));
   if (!source) return [];
 
+  const usedSlugs = new Set(
+    existingArticles
+      .map((article) => String(article?.slug || "").trim())
+      .filter(Boolean)
+  );
   const companyName = String(payload.companyName || "Unknown Company").trim();
   const companyUrl = String(payload.companyUrl || payload.url || "").trim();
   const nowIso = new Date().toISOString();
+  const nowMs = Date.now();
 
   return source
     .map((article, index) => {
@@ -88,14 +160,29 @@ function normalizeArticlePayload(payload) {
         return null;
       }
 
+      const id = String(article?.id || `blog-${nowMs}-${index + 1}`).trim();
+      const slugSeed = String(article?.slug || title).trim();
+      const slug = makeUniqueSlug(slugify(slugSeed), usedSlugs);
+      const articleCompanyName = String(
+        article?.companyName || companyName || "Unknown Company"
+      ).trim();
+      const articleCompanyUrl = String(
+        article?.companyUrl || companyUrl || ""
+      ).trim();
+      const createdAt = new Date(article?.createdAt || nowIso);
+      const safeCreatedAt = Number.isNaN(createdAt.getTime())
+        ? nowIso
+        : createdAt.toISOString();
+
       return {
-        id: `blog-${Date.now()}-${index + 1}`,
+        id: id || `blog-${nowMs}-${index + 1}`,
         title,
+        slug,
         keyword,
         content,
-        companyName,
-        companyUrl,
-        createdAt: nowIso,
+        companyName: articleCompanyName || "Unknown Company",
+        companyUrl: articleCompanyUrl,
+        createdAt: safeCreatedAt,
       };
     })
     .filter(Boolean);
@@ -135,7 +222,7 @@ const server = http.createServer((req, res) => {
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
       "Access-Control-Max-Age": "86400",
     });
@@ -152,7 +239,40 @@ const server = http.createServer((req, res) => {
     const articles = readArticles()
       .slice()
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const requestedSlug = String(parsedUrl.searchParams.get("slug") || "").trim();
+    if (requestedSlug) {
+      const article = articles.find((entry) => entry.slug === requestedSlug);
+      if (!article) {
+        sendJson(res, 404, { ok: false, error: "Article not found." });
+        return;
+      }
+      sendJson(res, 200, { ok: true, article });
+      return;
+    }
     sendJson(res, 200, { articles, total: articles.length });
+    return;
+  }
+
+  if (req.method === "GET" && pathname.startsWith("/api/blog/articles/")) {
+    const encodedSlug = pathname.slice("/api/blog/articles/".length);
+    const requestedSlug = decodeURIComponent(encodedSlug || "").trim();
+
+    if (!requestedSlug) {
+      sendJson(res, 400, { ok: false, error: "Missing article slug." });
+      return;
+    }
+
+    const articles = readArticles()
+      .slice()
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const article = articles.find((entry) => entry.slug === requestedSlug);
+
+    if (!article) {
+      sendJson(res, 404, { ok: false, error: "Article not found." });
+      return;
+    }
+
+    sendJson(res, 200, { ok: true, article });
     return;
   }
 
@@ -163,7 +283,8 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      const incoming = normalizeArticlePayload(payload);
+      const current = readArticles();
+      const incoming = normalizeArticlePayload(payload, current);
       if (incoming.length === 0) {
         sendJson(res, 400, {
           ok: false,
@@ -173,7 +294,6 @@ const server = http.createServer((req, res) => {
         return;
       }
 
-      const current = readArticles();
       const next = [...incoming, ...current];
       writeArticles(next);
 
@@ -182,7 +302,23 @@ const server = http.createServer((req, res) => {
         inserted: incoming.length,
         total: next.length,
         blogUrl: `http://localhost:${PORT}/blog`,
+        articleUrls: incoming.map(
+          (article) =>
+            `http://localhost:${PORT}/blog/${encodeURIComponent(article.slug)}`
+        ),
       });
+    });
+    return;
+  }
+
+  if (req.method === "DELETE" && pathname === "/api/blog/articles") {
+    const current = readArticles();
+    writeArticles([]);
+    sendJson(res, 200, {
+      ok: true,
+      cleared: current.length,
+      total: 0,
+      message: "All articles removed.",
     });
     return;
   }
@@ -192,7 +328,10 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === "GET" && pathname === "/blog") {
+  if (
+    req.method === "GET" &&
+    (pathname === "/blog" || pathname.startsWith("/blog/"))
+  ) {
     sendFile(res, path.join(PUBLIC_DIR, "blog.html"), "text/html; charset=utf-8");
     return;
   }
