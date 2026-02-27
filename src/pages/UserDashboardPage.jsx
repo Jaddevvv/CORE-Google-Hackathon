@@ -445,110 +445,35 @@ ${desiredCount}. [Question]`;
     try {
       let resolvedContext = "";
       const keywordCandidates = [];
-      let sourceLabel = "GPT-4o";
+      let sourceLabel = "local GPT-4o fallback";
+      let usedLocalFallback = false;
+      const localResearchModelId = "gpt-4o";
 
-      if (hasBackendEndpoints) {
-        const contextResponse = await fetch(contextEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            companyName: articleCompanyName.trim(),
-            url: normalizedUrl,
-            language: articleLanguage,
-            country: articleCountry,
-          }),
-        });
-
-        if (!contextResponse.ok) {
-          const errorText = await contextResponse.text();
-          throw new Error(
-            `get_context failed (${contextResponse.status}): ${errorText || "No details"}`
-          );
-        }
-
-        const contextData = await contextResponse.json();
-        resolvedContext =
-          typeof contextData === "string"
-            ? contextData
-            : contextData?.context ||
-              contextData?.summary ||
-              contextData?.analysis ||
-              contextData?.result ||
-              "";
-
-        if (!resolvedContext) {
-          throw new Error("get_context returned an empty context.");
-        }
-
-        const keywordsResponse = await fetch(keywordsEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            companyName: articleCompanyName.trim(),
-            url: normalizedUrl,
-            context: resolvedContext,
-            language: articleLanguage,
-            country: articleCountry,
-            rawKeywords: [
-              articleCompanyName.trim(),
-              ...(currentBrand?.sector ? [currentBrand.sector] : []),
-              ...(currentProject?.targetAudience
-                ? [currentProject.targetAudience]
-                : []),
-            ],
-          }),
-        });
-
-        if (!keywordsResponse.ok) {
-          const errorText = await keywordsResponse.text();
-          throw new Error(
-            `get_trendy_keywords failed (${keywordsResponse.status}): ${errorText || "No details"}`
-          );
-        }
-
-        const keywordsData = await keywordsResponse.json();
-
-        if (Array.isArray(keywordsData?.keywords)) {
-          keywordCandidates.push(...keywordsData.keywords);
-        }
-        if (Array.isArray(keywordsData?.trendyKeywords)) {
-          keywordCandidates.push(...keywordsData.trendyKeywords);
-        }
-        if (Array.isArray(keywordsData?.topKeywords)) {
-          keywordCandidates.push(...keywordsData.topKeywords);
-        }
-        if (Array.isArray(keywordsData)) {
-          keywordsData.forEach((entry) => {
-            if (Array.isArray(entry)) {
-              keywordCandidates.push(...entry);
-              return;
-            }
-            if (entry && typeof entry === "object") {
-              Object.values(entry).forEach((value) => {
-                if (Array.isArray(value)) {
-                  keywordCandidates.push(...value);
-                }
-              });
-            }
-          });
-        }
-        if (keywordsData && typeof keywordsData === "object") {
-          Object.values(keywordsData).forEach((value) => {
-            if (Array.isArray(value)) {
-              keywordCandidates.push(...value);
-            }
-          });
-        }
-
-        sourceLabel = "custom backend endpoints";
-      } else {
-        const localResearchModelId = "gpt-4o";
+      const runLocalFallback = async (backendErrorMessage = "") => {
         const localGptKey = (import.meta.env.VITE_GPT_API_KEY || "").trim();
         if (!localGptKey) {
+          if (backendErrorMessage) {
+            throw new Error(
+              `Backend path failed (${backendErrorMessage}) and local fallback is not configured. Missing VITE_GPT_API_KEY.`
+            );
+          }
           throw new Error(
             "Missing VITE_GPT_API_KEY. Add it to your .env to generate context and keywords with GPT-4o."
           );
         }
+
+        if (backendErrorMessage) {
+          setArticleEngineStatus(
+            `Backend path failed (${backendErrorMessage}). Using local GPT-4o fallback...`
+          );
+        }
+
+        usedLocalFallback = true;
+        sourceLabel = backendErrorMessage
+          ? "local GPT-4o fallback (backend path failed)"
+          : "local GPT-4o fallback";
+        resolvedContext = "";
+        keywordCandidates.length = 0;
 
         const contextPrompt = `You are a company research analyst.
 Company: ${articleCompanyName.trim()}
@@ -599,6 +524,124 @@ Return ONLY one keyword per line, no numbering, no bullets, no extra text.`;
             )
             .filter(Boolean)
         );
+      };
+
+      if (hasBackendEndpoints) {
+        try {
+          const contextResponse = await fetch(contextEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              companyName: articleCompanyName.trim(),
+              url: normalizedUrl,
+              language: articleLanguage,
+              country: articleCountry,
+            }),
+          });
+
+          if (!contextResponse.ok) {
+            const errorText = await contextResponse.text();
+            throw new Error(
+              `get_context failed (${contextResponse.status}): ${errorText || "No details"}`
+            );
+          }
+
+          const contextData = await contextResponse.json();
+
+          resolvedContext =
+            typeof contextData === "string"
+              ? contextData
+              : contextData?.context ||
+                contextData?.summary ||
+                contextData?.analysis ||
+                contextData?.result ||
+                "";
+
+          if (!resolvedContext) {
+            throw new Error("get_context returned an empty context.");
+          }
+
+          const backendFocusKeywords = Array.isArray(contextData?.focusKeywords)
+            ? contextData.focusKeywords
+            : [];
+
+          const keywordSeeds = [
+            articleCompanyName.trim(),
+            ...(backendFocusKeywords.length > 0
+              ? backendFocusKeywords
+              : [
+                  ...(currentBrand?.sector ? [currentBrand.sector] : []),
+                  ...(currentProject?.targetAudience
+                    ? [currentProject.targetAudience]
+                    : []),
+                ]),
+          ];
+
+          const keywordsResponse = await fetch(keywordsEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              companyName: articleCompanyName.trim(),
+              url: normalizedUrl,
+              language: articleLanguage,
+              country: articleCountry,
+              rawKeywords: keywordSeeds,
+            }),
+          });
+
+          if (!keywordsResponse.ok) {
+            const errorText = await keywordsResponse.text();
+            throw new Error(
+              `get_trendy_keywords failed (${keywordsResponse.status}): ${errorText || "No details"}`
+            );
+          }
+
+          const keywordsData = await keywordsResponse.json();
+
+          if (Array.isArray(keywordsData?.keywords)) {
+            keywordCandidates.push(...keywordsData.keywords);
+          }
+          if (Array.isArray(keywordsData?.trendyKeywords)) {
+            keywordCandidates.push(...keywordsData.trendyKeywords);
+          }
+          if (Array.isArray(keywordsData?.topKeywords)) {
+            keywordCandidates.push(...keywordsData.topKeywords);
+          }
+          if (Array.isArray(keywordsData)) {
+            keywordsData.forEach((entry) => {
+              if (Array.isArray(entry)) {
+                keywordCandidates.push(...entry);
+                return;
+              }
+              if (entry && typeof entry === "object") {
+                Object.values(entry).forEach((value) => {
+                  if (Array.isArray(value)) {
+                    keywordCandidates.push(...value);
+                  }
+                });
+              }
+            });
+          }
+          if (keywordsData && typeof keywordsData === "object") {
+            Object.values(keywordsData).forEach((value) => {
+              if (Array.isArray(value)) {
+                keywordCandidates.push(...value);
+              }
+            });
+          }
+
+          if (keywordCandidates.length === 0) {
+            throw new Error(
+              "get_trendy_keywords returned no related Google Trends keywords."
+            );
+          }
+
+          sourceLabel = "python backend endpoints";
+        } catch (backendError) {
+          await runLocalFallback(backendError?.message || "Failed to fetch");
+        }
+      } else {
+        await runLocalFallback();
       }
 
       const dedupedKeywords = [];
@@ -613,9 +656,9 @@ Return ONLY one keyword per line, no numbering, no bullets, no extra text.`;
 
       if (dedupedKeywords.length === 0) {
         throw new Error(
-          hasBackendEndpoints
-            ? "get_trendy_keywords returned no keywords."
-            : "Local keyword generation returned no keywords."
+          usedLocalFallback
+            ? "Local keyword generation returned no keywords."
+            : "get_trendy_keywords returned no keywords."
         );
       }
 

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "demo:blog": "node demo-blog-saas/server.js"
+    "demo:blog": "node demo-blog-saas/server.js",
+    "dev:py-context": "src/getKeywordsAndContext/.venv/bin/python src/getKeywordsAndContext/server.py"
   },
   "dependencies": {
     "clsx": "^2.1.1",
