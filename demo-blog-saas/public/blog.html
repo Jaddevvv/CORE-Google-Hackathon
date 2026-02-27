@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PulseStack Articles</title>
+    <title>GoPro Articles</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -11,11 +11,11 @@
       <header class="blog-header reveal no-lift">
         <div>
           <p class="badge">Live Blog</p>
-          <h1>PulseStack Articles</h1>
+          <h1>GoPro Articles</h1>
           <p id="status">Loading articles...</p>
         </div>
         <div class="actions">
-          <a href="/">SaaS Home</a>
+          <a href="/">GoPro Home</a>
           <a href="/blog">All Articles</a>
           <button id="refresh" type="button">Refresh</button>
         </div>
@@ -280,7 +280,7 @@
                 here automatically.
               </p>
               <div class="actions">
-                <a href="/">Go to SaaS Home</a>
+                <a href="/">Go to HomePage</a>
               </div>
             </article>
           `;
@@ -288,7 +288,7 @@
         }
 
         statusEl.textContent = `${articles.length} article${articles.length === 1 ? "" : "s"} published`;
-        document.title = "PulseStack Articles";
+        document.title = "GoPro Articles";
 
         articlesEl.innerHTML = articles
           .map((article, index) => createArticleCard(article, index))
@@ -319,7 +319,7 @@
           relatedArticlesEl.innerHTML = "";
         }
 
-        document.title = "Article not found | PulseStack";
+        document.title = "Article not found | GoPro";
         activateRevealAnimation();
       }
 
@@ -357,7 +357,7 @@
         }
 
         statusEl.textContent = `Reading: ${article.title}`;
-        document.title = `${article.title} | PulseStack`;
+        document.title = `${article.title} | GoPro`;
         activateRevealAnimation();
       }
 
